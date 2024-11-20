@@ -4,7 +4,7 @@
 
 <img src="https://github.com/oliviahealth/ichild/assets/48499839/793bf4eb-18ee-4028-8d57-422aff598fd3" width="300" />
 
-**IntelligentCHILD ** is a RAG application that provides pregnant women and families with personalized, dynamic search results by leveraging advanced natural language querying and the OliviaHealth knowledge base for accurate, health-related insights.
+**IntelligentCHILD** is a RAG application that provides pregnant women and families with personalized, dynamic search results by leveraging advanced natural language querying and the OliviaHealth knowledge base for accurate, health-related insights.
 
 Access the iCHILD application here: [http://18.190.26.46](http://18.190.26.46)
 
