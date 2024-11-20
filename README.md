@@ -18,11 +18,7 @@ Key features of the iCHILD application:
 
 ## Demo Video
 
-<video width="600" controls>
-  <source src="iCHILD_Demo.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
-
+https://github.com/user-attachments/assets/b70d59ad-f8cb-41af-a0cb-8ce330d598c2
 
 ## Requirements
 
@@ -156,8 +152,8 @@ python db_search.py
 ```
 
 
-### Test(Optional)
-    Testing can be implemented using pytest. Install pytest via pip:
+### Test (Optional)
+Testing can be implemented using pytest. Install pytest via pip:
 ```bash
 pip install pytest
 ```
