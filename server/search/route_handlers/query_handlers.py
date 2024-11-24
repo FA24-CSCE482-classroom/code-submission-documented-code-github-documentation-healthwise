@@ -1,28 +1,33 @@
 import json
 import os
 import openai
-from uuid import uuid4 as uuid
 
-from langchain import LLMChain, PromptTemplate
 from chains.conversational_retrieval_chain_with_memory import build_conversational_retrieval_chain_with_memory
 from langchain.chat_models import ChatOpenAI
-from vector_stores.pgvector import build_pg_vector_store
-from embeddings.openai import openai_embeddings
+from langchain.embeddings import OpenAIEmbeddings
 
-from database import message_store
-
+from socketio_instance import socketio
+from retrievers.PGVectorRetriever import build_pg_vector_retriever
 from retrievers.TableColumnRetriever import build_table_column_retriever
+import time
 
-# Using OpenAI for LLM
 llm = ChatOpenAI()
+openai_embeddings = OpenAIEmbeddings()
+connection_uri = os.getenv('POSTGRESQL_CONNECTION_STRING')
 
-# Build vector store and retriever
-collection_name = "2024-11-15 12:59:57"
-pg_vector_store = build_pg_vector_store(
-    embeddings_model=openai_embeddings, collection_name=collection_name, connection_uri=os.getenv('POSTGRESQL_CONNECTION_STRING'))
-pg_vector_retriever = pg_vector_store.as_retriever(search_type="mmr")
+# Create a retriever for the default langchain_pg_embedding table (direct questions)
+pg_vector_retriever = build_pg_vector_retriever('2024-11-15 12:59:57', openai_embeddings, connection_uri)
 
-def search_direct_questions(id, search_query):
+# Creating a TableColumnRetriever to index all of the columns for the location table when retrieving documents (location based questions)
+table_column_retriever = build_table_column_retriever(
+    connection_uri=connection_uri,
+    table_name="location",
+    column_names=["id", "name", "address", "city", "state", "country", "zip_code", "latitude", "longitude", "description", "phone", "sunday_hours", "monday_hours",
+                    "tuesday_hours", "wednesday_hours", "thursday_hours", "friday_hours", "saturday_hours", "rating", "address_link", "website", "resource_type", "county"],
+    embedding_column_name="embedding"
+)
+
+def search_direct_questions(conversation_id, search_query):
     '''
     Direct question handler searches OliviaHealth.org knowledge base for most relevant data relating to user query
     Data is passed to LLM to generate output
@@ -31,20 +36,23 @@ def search_direct_questions(id, search_query):
     Examples of direct questions: 'Newborn nutritonal advice', 'How do hormonal IUDs prevent pregnancy', 'What is mastitis treated with'
     '''
 
-    if not id:
-        id = uuid()
+    start_time = time.time()
 
     # Build the retrieval QA chain with SQL memory
     # Must pass in the session_id from the message_store table
     retrieval_qa_chain = build_conversational_retrieval_chain_with_memory(
-        llm, pg_vector_retriever, id)
+        llm, pg_vector_retriever, conversation_id, connection_uri, socketio)
 
     # Invoke RAG process
-    result = retrieval_qa_chain.run(search_query)
+    response = retrieval_qa_chain.invoke(search_query)
+    answer = response.get('answer')
 
-    return result
+    end_time = time.time()
+    print(f"\x1B[96m[TEST]\x1B[m Direct question took {end_time - start_time} seconds")
 
-def search_location_questions(id, search_query):
+    return answer
+
+def search_location_questions(conversation_id, search_query):
     '''
     Location question handler searches Locations table for most relevant locations relating to user query
     Data is converted to JSON array of locations
@@ -55,87 +63,23 @@ def search_location_questions(id, search_query):
     Examples of location questions: 'Dental Services in Corpus Christi', 'Where can I get mental health support in Bryan'
     '''
 
-    if not id:
-        id = uuid()
+    start_time = time.time()
 
-    locations = []
+    retrieval_qa_chain = build_conversational_retrieval_chain_with_memory(
+        llm, table_column_retriever, conversation_id, connection_uri, socketio)
+    
+    response = retrieval_qa_chain.invoke(search_query)
+    answer = response.get('answer')
+    source_documents = response.get('source_documents')
 
-    # Creating a TableColumnRetriever to index all of the columns for the location table when retrieving documents
-    table_column_retriever = build_table_column_retriever(
-        connection_uri=os.getenv('POSTGRESQL_CONNECTION_STRING'),
-        table_name="location",
-        column_names=["id", "name", "address", "city", "state", "country", "zip_code", "latitude", "longitude", "description", "phone", "sunday_hours", "monday_hours",
-                      "tuesday_hours", "wednesday_hours", "thursday_hours", "friday_hours", "saturday_hours", "rating", "address_link", "website", "resource_type", "county"],
-        embedding_column_name="embedding"
-    )
-
-    # Get the raw list of relevant locations
-    doc_list = table_column_retriever.get_relevant_documents(search_query)
-
-    # loop through the doc_list and for each doc add a json representation in the locations array
-    for doc in doc_list:
-        doc_id, name, address, city, state, country, zip_code, latitude, longitude, description, phone, sunday_hours, monday_hours, tuesday_hours, wednesday_hours, thursday_hours, friday_hours, saturday_hours, rating, address_link, website, resource_type, county = doc.page_content.split(
-            "##")
-
-        unified_address = f"{address}, {city}, {state} {zip_code}"
-        confidence = 1
-        hours_of_operation = [{"sunday": sunday_hours}, {"monday": monday_hours}, {"tuesday": tuesday_hours}, {
-            "wednesday": wednesday_hours}, {"thursday": thursday_hours}, {"friday": friday_hours}, {"saturday": saturday_hours}]
-        is_saved = False
-        # latitude, longitude, rating may be represented numerically
-        
-        try:
-            latitude = float(latitude.strip())
-            longitude = float(longitude.strip())
-            rating = float(rating.strip())
-        except:
-            pass
-
-        locations.append({
-            "address": unified_address,
-            "addressLink": address_link,
-            "confidence": confidence,
-            "description": description,
-            "hoursOfOperation": hours_of_operation,
-            "id": doc_id,
-            "isSaved": is_saved,
-            "latitude": latitude,
-            "longitude": longitude,
-            "name": name,
-            "phone": phone,
-            "rating": rating,
-            "website": website
-        })
-
-    prompt_template = """
-    User query: {search_query}
-
-    The following are relevant locations based on the query:
-    {locations}
-
-    Please summarize the most relevant locations for the user's request.
-    """
-
-    prompt = PromptTemplate(
-        input_variables=["search_query", "locations"],
-        template=prompt_template
-    )
-
-    chain = LLMChain(llm=llm, prompt=prompt)
-
-    formatted_locations = "\n".join([f"- {loc['name']} at {loc['address']} ({loc['description']})" for loc in locations])
-
-    response = chain.run({
-        "search_query": search_query,
-        "locations": formatted_locations
-    })
+    end_time = time.time()
+    print(f"\x1B[96m[TEST]\x1B[m Location question took {end_time - start_time} seconds")
 
     # Return the LLM response and the JSON
     return {
-        "response": response,
-        "locations": locations
+        "response": answer,
+        "locations": [json.loads(doc.page_content) for doc in source_documents]
     }
-
 
 def determine_search_type(messages):
     '''

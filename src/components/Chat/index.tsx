@@ -28,6 +28,10 @@ const ChatComponent = () => {
   const user = useAppStore((state) => state.user);
   const accessToken = useAppStore((state) => state.accessToken);
 
+  const socket = useAppStore(state => state.socket);
+
+  const isSidePanelOpen = useAppStore(state => state.isSidePanelOpen);
+
   // When the user submits a query, this will hold what they asked temporarily
   const [submittedQuery, setSubmittedQuery] = useState<null | string>(null);
 
@@ -43,6 +47,8 @@ const ChatComponent = () => {
   const currentConversationId = useAppStore((state) => state.currentConversationId);
   const setCurrentConversationId = useAppStore((state) => state.setCurrentConversationId);
 
+  const [temporaryMessage, setTemporaryMessage] = useState<null | string>(null);
+
   // Using react-hook-form to manage the state of the input field
   // https://www.react-hook-form.com/
   const { register, handleSubmit, reset, setValue } = useForm();
@@ -52,6 +58,8 @@ const ChatComponent = () => {
 
   // Scroll to the bottom of the container with smooth animation
   useEffect(() => {
+    if(isSidePanelOpen) return;
+    
     const elems = containerRef.current?.querySelectorAll("[data-is-scroll-target]");
     if (elems && elems.length > 0) {
       const elem = elems[elems.length - 1];
@@ -100,9 +108,30 @@ const ChatComponent = () => {
     }
   }, [currentConversationId]);
 
+
+  useEffect(() => {
+    socket.on("stream_data", (data) => {
+      setTemporaryMessage((prev) => {
+        if (prev === null) {
+          return data
+        }
+
+        return prev + data;
+      });
+    });
+
+    socket.on('stream_start', () => {
+      setTemporaryMessage('');
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
   // Call the backend with the user entered query to get a response
   // https://tanstack.com/query/v4/docs/react/guides/mutations
-  const { mutate: getResponse, isLoading: isResponseLoading } = useMutation(async (data: { query: string }) => {  
+  const { mutate: getResponse, isLoading: isResponseLoading } = useMutation(async (data: { query: string }) => {
     if (data.query === "") return
     if (!currentConversationId) return;
 
@@ -117,7 +146,7 @@ const ChatComponent = () => {
 
     const response: IAPIResponse = (await axios.post(`${import.meta.env.VITE_API_URL}/formattedresults`, formData, { headers: { ...headers }, withCredentials: true })).data;
 
-    setCurrentConversationId(response.conversationId);
+    // setCurrentConversationId(response.conversationId);
 
     const conversation: IConversation = (await axios.post(`${import.meta.env.VITE_API_URL}/conversations`, { id: response.conversationId, title: response.userQuery }, { headers: { ...headers }, withCredentials: true })).data;
     await axios.post(`${import.meta.env.VITE_API_URL}/response`, { ...response, conversationId: conversation.id }, { headers: { ...headers }, withCredentials: true });
@@ -135,6 +164,7 @@ const ChatComponent = () => {
     onSuccess: async (response) => {
       if (response) {
         setApiResponses([...apiResponses, response]);
+        setTemporaryMessage(null);
       }
 
       reset();
@@ -154,7 +184,7 @@ const ChatComponent = () => {
   const handleQuickResponse = (query: string) => {
     setValue("query", query);
     setSubmittedQuery(query);
-    
+
     reset();
 
     handleSubmit(() => getResponse({ query }))();
@@ -215,11 +245,15 @@ const ChatComponent = () => {
 
                 <div className="flex gap-4">
                   <OllieAvatar />
-                  <ChatBubble isResponse={true} isScrollTarget={true}>
+                  {temporaryMessage == null ? (<ChatBubble isResponse={true} isScrollTarget={true}>
                     <span className="loading loading-dots loading-md"></span>
-                  </ChatBubble>
+                  </ChatBubble>) : (<ChatBubble isResponse={true} isScrollTarget={true}>
+                    {temporaryMessage}
+                  </ChatBubble>)}
                 </div>
               </>) : ""}
+
+
             </>
           )}
         </div>
@@ -232,7 +266,7 @@ const ChatComponent = () => {
           <button className="btn btn-square h-full bg-white border-none hover:bg-primary active:bg-primary-focus rounded-box rounded-l-none hover:text-white">
             <p>
               <svg width="24" height="26" viewBox="0 0 32 34" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path id="Subtract" d="M0.655396 34L31.263 17L0.655396 0L4.89595 13.1308L21.2664 17L4.89595 21.2815L0.655396 34Z" className="fill-current" />
+                <path id="Subtract" d="M0.655396 34L31.263 17L0.655396 0L4.89595 13.1308L21.2664 17L4.89595 21.2815L0.655396 34Z" className="fill-current" />
               </svg>
             </p>
           </button>

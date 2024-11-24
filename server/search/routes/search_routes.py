@@ -3,13 +3,9 @@ from sentence_transformers import SentenceTransformer
 from flask_jwt_extended import get_jwt_identity, jwt_required
 import os
 import time
-import openai
-import uuid
 import json
 
-from langchain.chat_models import ChatOpenAI
-from langchain import LLMChain, PromptTemplate
-from route_handlers.query_handlers import search_direct_questions, search_location_questions, determine_search_type, tools
+from route_handlers.query_handlers import search_direct_questions, search_location_questions, determine_search_type
 
 from database import Location, message_store, db
 
@@ -34,14 +30,13 @@ def connection_and_setup():
     encoding_dict["Encodings"] = embeddings
     print("*******END PREPROCESS********")
 
-# Using OpenAI for LLM
-llm = ChatOpenAI()
-
+# Old ichild homepage
 @search_routes_bp.route("/", methods=['POST', 'GET'])
 def msg():
     return render_template('index.html')
 
 # API route for ICHILD frontend
+# Takes in a search_query and conversation_id to generate a response
 @search_routes_bp.route("/formattedresults", methods=['POST', 'GET'])
 @jwt_required()
 def formatted_db_search():
@@ -50,17 +45,17 @@ def formatted_db_search():
     if (not user_id):
         return jsonify({'Unauthorized': 'Unauthorized'}), 403
 
-    search_query = request.form['data']
-    conversation_id = request.form['conversationId']
+    search_query = request.form.get('data')
+    conversation_id = request.form.get('conversationId')
     date_created = int(time.time() * 1000)
-
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant. First, summarize the conversation history. Then determine if the user's query is location-based, direct-answer, or requires more information. Provide the summary explicitly."},
-    ]
 
     # Reconstruct the conversation history given the conversation_id
     conversation_history = message_store.query.filter_by(
         session_id=conversation_id).all()
+
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant. First, summarize the conversation history. Then determine if the user's query is location-based, direct-answer, or requires more information. Provide the summary explicitly."},
+    ]
 
     for history in conversation_history:
         history = json.loads(history.message)
@@ -77,18 +72,31 @@ def formatted_db_search():
         messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": search_query})
 
+    start_time = time.time()
+
+    # Determine weather search_query is a direct question or location based
+    # Select which tool to invoke (search_direct_question for direct questions, search_location_question for location based question)
     determine_search_type_response = determine_search_type(messages)
-    tool_calls = determine_search_type_response.choices[0].message.tool_calls
+    message = determine_search_type_response.choices[0].message
+    tool_calls = message.tool_calls
+
+    end_time = time.time()
+    print(f"\x1B[96m[TEST]\x1B[m Choosing function took {end_time - start_time} seconds")
 
     if (tool_calls):
-        function_name = determine_search_type_response.choices[0].message.tool_calls[0].function.name
+        print(f"\x1B[96m[TEST]\x1B[m Chosen function: {tool_calls[0].function.name}")
+    else:
+        print("\x1B[96m[TEST] \x1B[91m[WARN]\x1B[m OpenAI Classification Refusal")
+
+    if (tool_calls):
+        function_name = tool_calls[0].function.name
     else:
         '''
         Follow up question is needed for more information.
         Need to manually add the user query and ai response to the db
         '''
         
-        content = determine_search_type_response.choices[0].message.content
+        response = determine_search_type_response.choices[0].message.content
 
         new_user_message = message_store(
             session_id=conversation_id,
@@ -97,7 +105,7 @@ def formatted_db_search():
 
         new_response_message = message_store(
             session_id=conversation_id,
-            message=f'{{"type": "ai", "data": {{"content": "{content}"}}}}'
+            message=f'{{"type": "ai", "data": {{"content": "{response}"}}}}'
         )
 
         db.session.add(new_user_message)
@@ -107,15 +115,17 @@ def formatted_db_search():
 
         return {
             'userQuery': search_query,
-            'response': content,
+            'response': response,
             'response_type': 'direct',
             'locations': [],
             'dateCreated': date_created,
             'conversationId': conversation_id
         }
     
+    # determine_search_type() will also create a summary of the conversation history
+    # Extract the summarized query and pass it into the search handler
     arguments = json.loads(tool_calls[0].function.arguments)
-    summarized_query = json.loads(tool_calls[0].function.arguments)['query']
+    summarized_query = arguments['query']
 
     if (function_name == 'search_direct_questions'):
         response_type = 'direct'
